@@ -175,13 +175,14 @@ def find_topk_similar_images(image_path, k=5):
 
 
 if __name__ == "__main__":
-    image_path = "data/cat/cat_5.jpg"
+    animal = input("Enter an animal name to use its image: ").strip().lower()
+    image_path = f"data/test/{animal}_t.jpg"
     k = 10
 
     try:
         topk = find_topk_similar_images(image_path, k)
         print(f"Top {k} similar images:")
-        for item in topk:
-            print(f"{item['filename']} - {item['similarity']:.2f}")
+        for i, item in enumerate(topk, start=1):
+            print(f"{i}. {item['filename']} - {item['similarity']:.2f}")
     except Exception as e:
         print(f"Program failed: {e}")
