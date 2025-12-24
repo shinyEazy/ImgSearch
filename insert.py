@@ -137,9 +137,11 @@ def load_images_from_directory(directory_path):
     if not os.path.exists(directory_path):
         raise ValueError(f"Directory not found: {directory_path}")
 
-    for filename in os.listdir(directory_path):
-        if os.path.splitext(filename)[1].lower() in image_extensions:
-            image_paths.append(os.path.join(directory_path, filename))
+    # Recursively walk through all subdirectories
+    for root, dirs, files in os.walk(directory_path):
+        for filename in files:
+            if os.path.splitext(filename)[1].lower() in image_extensions:
+                image_paths.append(os.path.join(root, filename))
 
     if not image_paths:
         raise ValueError(f"No images found in {directory_path}")
@@ -232,7 +234,7 @@ def search_similar_images(query_embedding, embeddings, top_n=1, query_type="text
 
 
 if __name__ == "__main__":
-    image_dir = "data/cat"
+    image_dir = "data"
 
     try:
         # Load all images from the directory
