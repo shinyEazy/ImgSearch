@@ -8,6 +8,7 @@ from byteplussdkarkruntime import Ark
 from sklearn.metrics.pairwise import cosine_similarity
 from dotenv import load_dotenv
 
+
 load_dotenv()
 
 # Database configuration
@@ -30,42 +31,6 @@ def get_db_connection():
     except Exception as e:
         print(f"Failed to connect to database: {str(e)}")
         raise
-
-
-def save_embedding_to_db(
-    filename, embedding, total_tokens=None, image_tokens=None, text_tokens=None
-):
-    """Save image embedding to PostgreSQL database"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        image_id = str(uuid.uuid4())
-        embedding_list = embedding.tolist()
-
-        cursor.execute(
-            """
-            INSERT INTO images (id, filename, embedding, total_tokens, image_tokens, text_tokens, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                image_id,
-                filename,
-                embedding_list,
-                total_tokens,
-                image_tokens,
-                text_tokens,
-                datetime.now(),
-            ),
-        )
-        conn.commit()
-        return image_id
-    except Exception as e:
-        conn.rollback()
-        print(f" - Failed to save to DB: {filename} - {str(e)}")
-        raise
-    finally:
-        cursor.close()
-        conn.close()
 
 
 def get_embedding(input_data, input_type="image_base64"):
@@ -129,26 +94,6 @@ def get_embedding(input_data, input_type="image_base64"):
         raise
 
 
-def load_images_from_directory(directory_path):
-    """Load all image files from a directory"""
-    image_extensions = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
-    image_paths = []
-
-    if not os.path.exists(directory_path):
-        raise ValueError(f"Directory not found: {directory_path}")
-
-    # Recursively walk through all subdirectories
-    for root, dirs, files in os.walk(directory_path):
-        for filename in files:
-            if os.path.splitext(filename)[1].lower() in image_extensions:
-                image_paths.append(os.path.join(root, filename))
-
-    if not image_paths:
-        raise ValueError(f"No images found in {directory_path}")
-
-    return sorted(image_paths)
-
-
 def encode_image(image_path):
     """Base64 encode an image file with proper data URI format"""
     # Determine image format from file extension
@@ -171,54 +116,72 @@ def encode_image(image_path):
     return f"data:image/{image_format};base64,{base64_str}"
 
 
-def generate_image_embeddings(image_paths, save_to_db=True):
+def generate_image_embeddings(image_path):
     """Batch generate image embeddings from local files and optionally save to database"""
-    print(f"[1/2] Start generating embeddings for {len(image_paths)} images...")
+    print(f"[1/2] Start generating embeddings for 1 image...")
     embeddings = []
-    for i, image_path in enumerate(image_paths):
-        try:
-            # Encode image to base64
-            base64_image = encode_image(image_path)
-            # Get embedding from API
-            embedding, usage_info = get_embedding(base64_image, "image_base64")
-            filename = os.path.basename(image_path)
+    try:
+        # Encode image to base64
+        base64_image = encode_image(image_path)
+        # Get embedding from API
+        embedding, usage_info = get_embedding(base64_image, "image_base64")
+        filename = os.path.basename(image_path)
 
-            # Save to database if requested
-            if save_to_db:
-                save_embedding_to_db(
-                    filename,
-                    embedding,
-                    total_tokens=usage_info["total_tokens"],
-                    image_tokens=usage_info["image_tokens"],
-                    text_tokens=usage_info["text_tokens"],
-                )
-
-            embeddings.append(
-                {"image_path": image_path, "filename": filename, "embedding": embedding}
-            )
-            print(f" [{i+1}/{len(image_paths)}] Success: {filename}")
-        except Exception as e:
-            print(
-                f" [{i+1}/{len(image_paths)}] Failed: {os.path.basename(image_path)} - {str(e)}"
-            )
-            continue
-
+        embeddings.append(
+            {"image_path": image_path, "filename": filename, "embedding": embedding}
+        )
+    except Exception as e:
+        print(f" [1/1] Failed: {os.path.basename(image_path)} - {str(e)}")
     if not embeddings:
         raise ValueError("All image embeddings generation failed")
-    print(f"[2/2] Completed: {len(embeddings)} valid embeddings")
+    print(f"[2/2] Completed: {len(embeddings)} valid embeddings - usage: {usage_info}")
     return embeddings
 
 
+def get_topk_similar_from_db(query_embedding, k=5):
+    """Query Postgres (with pgvector) for top k most similar images by embedding."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # pgvector: embedding <-> %s for cosine distance, order by ascending (most similar first)
+    sql = f"""
+        SELECT
+            filename,
+            1 - (embedding <=> %s) / 2 AS similarity
+        FROM images
+        ORDER BY embedding <=> %s
+        LIMIT {k};
+    """
+    # Ensure query_embedding is a list/array of floats
+    if isinstance(query_embedding, np.ndarray):
+        query_embedding = query_embedding.astype(float).tolist()
+    else:
+        query_embedding = [float(x) for x in query_embedding]
+    # Convert to pgvector string format: '[0.1,0.2,0.3]'
+    vector_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
+    cur.execute(sql, (vector_str, vector_str))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    # Return list of dicts: [{filename, similarity}]
+    return [{"filename": row[0], "similarity": row[1]} for row in rows]
+
+
+def find_topk_similar_images(image_path, k=5):
+    """Given an image file, return top k most similar image filenames from DB using pgvector."""
+    embedding_list = generate_image_embeddings(image_path)
+    query_embedding = embedding_list[0]["embedding"]
+    topk_results = get_topk_similar_from_db(query_embedding, k)
+    return topk_results
+
+
 if __name__ == "__main__":
-    image_dir = "data"
+    image_path = "data/cat/cat_5.jpg"
+    k = 10
 
     try:
-        # Load all images from the directory
-        image_paths = load_images_from_directory(image_dir)
-        print(f"Found {len(image_paths)} images in {image_dir}\n")
-
-        # Convert images to vectors and save to database
-        image_embs = generate_image_embeddings(image_paths, save_to_db=True)
-
+        topk = find_topk_similar_images(image_path, k)
+        print(f"Top {k} similar images:")
+        for item in topk:
+            print(f"{item['filename']} - {item['similarity']:.2f}")
     except Exception as e:
         print(f"Program failed: {e}")
